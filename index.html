@@ -69,13 +69,19 @@ h2 {
     <a href="https://opendata.cbs.nl/#/CBS/nl/dataset/82610NED/table?ts=1766924065840" target="_blank">
     82610NED (CBS site)
   </a><br>
-  </a>
-    <a href="energie_NL_elec_duurzaam.html">
-    Duurzame Energie
-  </a>
 </p>
 
-
+<div id="content"></div>
+<a href="#" onclick="loadPage('energie_NL_elec_duurzaam.html')">Duurzame energie</a>
+<script>
+function loadPage(page) {
+    fetch(page)
+        .then(response => response.text())
+        .then(html => {
+            document.getElementById('content').innerHTML = html;
+        });
+}
+</script>
 
 <script>
 (async () => {
