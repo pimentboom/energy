@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<title>Energieproductie NL – Totaal en Hernieuwbaar</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+:root { color-scheme: light dark; }
+body {
+  margin: 0;
+  padding: 10px;
+  font-family: Arial, sans-serif;
+  background: #f5f5f5;
+  color: #222;
+  box-sizing: border-box;
+}
+h2 {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+  text-align: center;
+}
+.subtitle {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  text-align: center;
+  color: #555;
+}
+#chartWrapper {
+  position: relative;
+  width: 100%;
+  height: 55vh;
+  max-height: 450px;
+  min-height: 220px;
+}
+#chartWrapper canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+.footer-note {
+  margin-top: 6px;
+  font-size: 10px;
+  text-align: center;
+  color: #777;
+}
+</style>
+</head>
+
+<body>
+<h2>Energieproductie NL – Totaal en Hernieuwbaar</h2>
+<div class="subtitle">Gecombineerde CBS‑datasets 80030NED + 82610NED</div>
+
+<div id="chartWrapper">
+  <canvas id="cbsChart"></canvas>
+</div>
+
+<p class="footer-note">
+  Data: CBS Open Data – StatLine  
+  <a href="https://opendata.cbs.nl/ODataApi/OData/80030NED/TypedDataSet?$format=json" target="_blank">
+    80030NED (dataset)
+  </a>
+  <a href="https://opendata.cbs.nl/#/CBS/nl/dataset/80030ned/table?ts=1766853987176" target="_blank">
+    80030NED (CBS site)
+  </a><br>
+  <a href="https://opendata.cbs.nl/ODataApi/OData/82610NED/TypedDataSet?$top=50000" target="_blank">
+    82610NED (hernieuwbaar)
+  </a>
+</p>
+
+
+<script>
+(async () => {
+
+  const URL_FOSSIEL =
+    "https://opendata.cbs.nl/ODataApi/OData/80030NED/TypedDataSet?$format=json";
+
+  const URL_HERNIEUWBAAR =
+    "https://opendata.cbs.nl/ODataApi/OData/82610NED/TypedDataSet?$top=50000";
+
+  const VALUE_FOSSIEL = "ElektriciteitMWh_2";
+  const PRODUCTIE_FILTER = "E007022";
+  const ENERGIEDRAGER_FILTER = "T001027";
+
+  const VALUE_HERNIEUWBAAR = "NettoElektriciteitsproductie_3";
+
+  const BRONNEN = [
+    { code: "E006590", key: "zonnestroom", label: "Zonnestroom" },
+    { code: "E006637", key: "wind_land", label: "Wind op land" },
+    { code: "E006638", key: "Wind op zee", label: "Wind op zee" },
+    { code: "E006566", key: "biomassa", label: "Biomassa" }
+  ];
+
+  async function fetchJson(url) {
+    const r = await fetch(url);
+    const j = await r.json();
+    return j.value || [];
+  }
+
+  function getYear(period) {
+    const y = parseInt(period.substring(0, 4), 10);
+    return isNaN(y) ? null : y;
+  }
+
+  function aggregateByYear(rows, field) {
+    const map = new Map();
+    for (const r of rows) {
+      const y = getYear(r.Perioden);
+      if (!y) continue;
+      const val = Number(r[field]);
+      if (isNaN(val)) continue;
+      map.set(y, (map.get(y) || 0) + val);
+    }
+    return map;
+  }
+
+  function selectYears(allYears) {
+    const sorted = [...allYears].sort((a, b) => a - b);
+    const minY = sorted[0];
+    const maxY = sorted[sorted.length - 1];
+    const cutoff = maxY - 1;
+
+    const fiveSteps = [];
+    for (let y = minY; y <= cutoff; y++) {
+      if (y % 5 === 0) fiveSteps.push(y);
+    }
+
+    // laatste jaar
+    const lastYears = [maxY];
+
+    //const lastYears = [];
+    //for (let y = maxY - 4; y <= maxY; y++) {
+    //  if (sorted.includes(y)) lastYears.push(y);
+    //}
+
+    return [...new Set([...fiveSteps, ...lastYears])].sort((a, b) => a - b);
+  }
+
+  try {
+    const [rowsFossiel, rowsHer] = await Promise.all([
+      fetchJson(URL_FOSSIEL),
+      fetchJson(URL_HERNIEUWBAAR)
+    ]);
+
+    const fossielRows = rowsFossiel.filter(r =>
+      (r.CentraleDecentraleProductie || "").trim() === PRODUCTIE_FILTER &&
+      (r.Energiedragers || "").trim() === ENERGIEDRAGER_FILTER &&
+      r[VALUE_FOSSIEL] !== null &&
+      !isNaN(Number(r[VALUE_FOSSIEL]))
+    );
+
+    const mapFossiel = aggregateByYear(fossielRows, VALUE_FOSSIEL);
+    // Correctie: 
+    mapFossiel.forEach((v, y) => mapFossiel.set(y, v / 1000000));
+
+    const perBron = [];
+    const allYearsSet = new Set([...mapFossiel.keys()]);
+
+    for (const bron of BRONNEN) {
+      const rows = rowsHer.filter(r =>
+        (r.BronTechniek || "").trim() === bron.code &&
+        r[VALUE_HERNIEUWBAAR] !== null &&
+        !isNaN(Number(r[VALUE_HERNIEUWBAAR]))
+      );
+
+      const map = aggregateByYear(rows, VALUE_HERNIEUWBAAR);
+      // schaalcorrectie: hernieuwbaar delen door 100000 
+      map.forEach((v, y) => map.set(y, v / 1000));
+      map.forEach((_, y) => allYearsSet.add(y));
+
+      perBron.push({ bron, map });
+    }
+
+    const selectedYears = selectYears([...allYearsSet]);
+
+    const datasets = [];
+
+    // Hernieuwbaar links
+    const colors = [
+      "rgba(255, 193, 7, 0.6)",
+      "rgba(25, 193, 7, 0.6)",
+      "rgba(7, 112, 193, 0.6)",
+      "rgba(139, 69, 19, 0.6)"
+    ];
+
+    perBron.forEach((entry, idx) => {
+      datasets.push({
+        label: entry.bron.label,
+        data: selectedYears.map(y => entry.map.get(y) || 0),
+        backgroundColor: colors[idx],
+        borderColor: colors[idx].replace("0.6", "1"),
+        borderWidth: 1,
+        stack: "hernieuwbaar"
+      });
+    });
+
+    // Fossiel rechts
+    datasets.push({
+      label: "Totaal",
+      data: selectedYears.map(y => mapFossiel.get(y) || 0),
+      backgroundColor: "rgba(120, 120, 120, 0.6)",
+      borderColor: "rgba(120, 120, 120, 1)",
+      borderWidth: 1,
+      stack: "fossiel"
+    });
+
+    const ctx = document.getElementById("cbsChart").getContext("2d");
+
+    new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: selectedYears.map(String),
+        datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: {
+            stacked: true,
+            title: { display: true, text: "Jaar" }
+          },
+          y: {
+            stacked: true,
+            beginAtZero: true,
+            title: { display: true, text: "productie (x1000 GWh)" }
+          }
+        },
+        datasets: {
+          bar: {
+            maxBarThickness: 40,
+            categoryPercentage: 0.5,
+            barPercentage: 1.0
+          }
+        }
+      }
+    });
+
+  } catch (err) {
+    console.error(err);
+    document.getElementById("chartWrapper").innerHTML =
+      "<p style='font-size:12px;color:#b00;text-align:center;'>Fout bij laden CBS-data.</p>";
+  }
+
+})();
+</script>
+
+</body>
+</html>
