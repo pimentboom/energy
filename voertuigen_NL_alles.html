@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<title>Aantal voertuigen in NL</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+:root { color-scheme: light dark; }
+body {
+  margin: 0;
+  padding: 10px;
+  font-family: Arial, sans-serif;
+  background: #f5f5f5;
+  color: #222;
+  box-sizing: border-box;
+}
+h2 {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+  text-align: center;
+}
+#chartWrapper {
+  position: relative;
+  width: 100%;
+  height: 55vh;
+  max-height: 450px;
+  min-height: 220px;
+}
+#chartWrapper canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+.footer-note {
+  margin-top: 6px;
+  font-size: 10px;
+  text-align: center;
+  color: #777;
+}
+</style>
+</head>
+
+<body>
+<h2>Aantal voertuigen in NL</h2>
+
+<div id="chartWrapper">
+  <canvas id="cbsChart"></canvas>
+</div>
+
+<p class="footer-note">
+  Data: CBS Open Data – StatLine
+</p>
+
+<script>
+(async () => {
+
+  const URL_ALLES =
+    "https://opendata.cbs.nl/ODataApi/OData/82472NED/TypedDataSet?$top=50000";
+
+  const URL_STACK =
+    "https://opendata.cbs.nl/ODataApi/OData/82472NED/TypedDataSet?$top=50000";
+
+  const URL_EXTRA =
+    "https://opendata.cbs.nl/ODataApi/OData/85405NED/TypedDataSet?$top=50000";
+
+  const VALUE_ALLES = "TotaalMotorvoertuigen_1";
+
+  const BRONNEN = [
+    { code: "Personenauto_2", label: "Personenauto’s" },
+    { code: "Motorfiets_3", label: "Motorfietsen" },
+    { code: "TotaalBedrijfsmotorvoertuigen_4", label: "Bedrijfsmotorvoertuigen" }
+  ];
+
+  // EXTRA dataset filters
+  const EXTRA_FILTER_BRANDSTOF = "A041292";   // benzine
+  const EXTRA_FILTER_LEEFTIJD = "10000";      // leeftijdscategorie
+  const EXTRA_VALUE = "NederlandsePersonenautoSInGebruik_3";
+
+  async function fetchJson(url) {
+    const r = await fetch(url);
+    const j = await r.json();
+    return j.value || [];
+  }
+
+  function getYear(period) {
+    const y = parseInt(period.substring(0, 4), 10);
+    return isNaN(y) ? null : y;
+  }
+
+  function aggregateByYear(rows, field) {
+    const map = new Map();
+    for (const r of rows) {
+      const y = getYear(r.Perioden);
+      if (!y) continue;
+      const val = Number(r[field]);
+      if (isNaN(val)) continue;
+      map.set(y, (map.get(y) || 0) + val);
+    }
+    return map;
+  }
+
+  function selectYears(allYears) {
+    const sorted = [...allYears].sort((a, b) => a - b);
+    const minY = sorted[0];
+    const maxY = sorted[sorted.length - 1];
+    const cutoff = maxY - 1;
+
+    const fiveSteps = [];
+    for (let y = minY; y <= cutoff; y++) {
+      if (y % 10 === 0) fiveSteps.push(y);
+    }
+
+    const lastYears = [];
+    for (let y = maxY - 4; y <= maxY; y++) {
+      if (sorted.includes(y)) lastYears.push(y);
+    }
+
+    return [...new Set([...fiveSteps, ...lastYears])].sort((a, b) => a - b);
+  }
+
+  try {
+    const [rowsFossiel, rowsStack, rowsExtra] = await Promise.all([
+      fetchJson(URL_ALLES),
+      fetchJson(URL_STACK),
+      fetchJson(URL_EXTRA)
+    ]);
+
+    // TOTAAL motorvoertuigen
+    const fossielRows = rowsFossiel.filter(r =>
+      typeof r.Perioden === "string" &&
+      r.Perioden.endsWith("JJ00") &&
+      r[VALUE_ALLES] !== null &&
+      !isNaN(Number(r[VALUE_ALLES]))
+    );
+
+    const mapFossiel = aggregateByYear(fossielRows, VALUE_ALLES);
+    mapFossiel.forEach((v, y) => mapFossiel.set(y, v * 1000));
+
+    const perBron = [];
+    const allYearsSet = new Set([...mapFossiel.keys()]);
+
+    // STACK datasets
+    for (const bron of BRONNEN) {
+      const rows = rowsStack.filter(r =>
+        typeof r[bron.code] !== "undefined" &&
+        !isNaN(Number(r[bron.code]))
+      );
+
+      const map = aggregateByYear(rows, bron.code);
+      map.forEach((v, y) => map.set(y, v * 1000));
+      map.forEach((_, y) => allYearsSet.add(y));
+
+      perBron.push({ bron, map });
+    }
+
+    // EXTRA dataset met dubbele filter
+    const extraRows = rowsExtra.filter(r =>
+      r.BrandstofsoortVoertuig === EXTRA_FILTER_BRANDSTOF &&
+      r.LeeftijdVoertuig === EXTRA_FILTER_LEEFTIJD &&
+      typeof r[EXTRA_VALUE] !== "undefined" &&
+      !isNaN(Number(r[EXTRA_VALUE]))
+    );
+
+    const mapExtra = aggregateByYear(extraRows, EXTRA_VALUE);
+    mapExtra.forEach((v, y) => mapExtra.set(y, v * 1));
+    mapExtra.forEach((_, y) => allYearsSet.add(y));
+
+    const selectedYears = selectYears([...allYearsSet]);
+
+    const datasets = [];
+
+    // EXTRA dataset als eerste kolom
+    datasets.push({
+      label: "Full Electric",
+      data: selectedYears.map(y => mapExtra.get(y) || 0),
+      backgroundColor: "rgba(200, 80, 80, 0.6)",
+      borderColor: "rgba(200, 80, 80, 1)",
+      borderWidth: 1,
+      stack: "EXTRA"
+    });
+
+    // STACK datasets
+    const colors = [
+      "rgba(255, 193, 7, 0.6)",
+      "rgba(25, 193, 7, 0.6)",
+      "rgba(7, 112, 193, 0.6)"
+    ];
+
+    perBron.forEach((entry, idx) => {
+      datasets.push({
+        label: entry.bron.label,
+        data: selectedYears.map(y => entry.map.get(y) || 0),
+        backgroundColor: colors[idx],
+        borderColor: colors[idx].replace("0.6", "1"),
+        borderWidth: 1,
+        stack: "STACK"
+      });
+    });
+
+    // TOTAAL motorvoertuigen
+    datasets.push({
+      label: "Totaal motorvoertuigen",
+      data: selectedYears.map(y => mapFossiel.get(y) || 0),
+      backgroundColor: "rgba(120, 120, 120, 0.6)",
+      borderColor: "rgba(120, 120, 120, 1)",
+      borderWidth: 1,
+      stack: "ALLES"
+    });
+
+    const ctx = document.getElementById("cbsChart").getContext("2d");
+
+    new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: selectedYears.map(String),
+        datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { stacked: true, title: { display: true, text: "Jaar" } },
+          y: { stacked: true, beginAtZero: true, title: { display: true, text: "Aantal voertuigen" } }
+        }
+      }
+    });
+
+  } catch (err) {
+    console.error(err);
+    document.getElementById("chartWrapper").innerHTML =
+      "<p style='font-size:12px;color:#b00;text-align:center;'>Fout bij laden CBS-data.</p>";
+  }
+
+})();
+</script>
+
+</body>
+</html>
