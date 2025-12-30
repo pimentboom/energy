@@ -1,1 +1,200 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<title>CBS Bevolking & Migratie</title>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+:root { color-scheme: light dark; }
+body {
+  margin: 0;
+  padding: 10px;
+  font-family: Arial, sans-serif;
+  background: #f5f5f5;
+  color: #222;
+}
+h2 {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+  text-align: center;
+}
+#chartWrapper {
+  position: relative;
+  width: 100%;
+  height: 55vh;
+  max-height: 450px;
+  min-height: 220px;
+}
+#chartWrapper canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+.footer-note {
+  margin-top: 6px;
+  font-size: 10px;
+  text-align: center;
+  color: #777;
+}
+</style>
+</head>
+
+<body>
+<h2>CBS Bevolking & Migratie</h2>
+
+<div id="chartWrapper">
+  <canvas id="cbsChart"></canvas>
+</div>
+
+<p class="footer-note">
+Data: CBS Open Data – StatLine 85496NED (Bevolking; kerncijfers)
+</p>
+
+<script>
+(async () => {
+
+  // ========================
+  // CONFIG
+  // ========================
+
+  const DATA_URL =
+    "https://opendata.cbs.nl/ODataApi/OData/85496NED/TypedDataSet?$top=50000";
+
+  const FIELDS = [
+    { key: "TotaleBevolking_1", label: "Totale bevolking", factor: 1 },
+    { key: "TotaleBevolkingsgroei_65", label: "Bevolkingsgroei", factor: 1 },
+    { key: "Immigratie_71", label: "Immigratie", factor: 1 },
+    { key: "EmigratieInclusiefAdministratieveC_72", label: "Emigratie", factor: 1 }
+  ];
+
+  const CHART_CANVAS_ID = "cbsChart";
+
+  // ========================
+  // HELPERS
+  // ========================
+
+  async function fetchCbsData() {
+    const response = await fetch(DATA_URL);
+    if (!response.ok) throw new Error("Fout bij ophalen CBS-data: " + response.status);
+    const json = await response.json();
+    return json.value || [];
+  }
+
+  function getYear(periodCode) {
+    if (!periodCode) return null;
+    const y = parseInt(periodCode.substring(0, 4), 10);
+    return isNaN(y) ? null : y;
+  }
+
+  function aggregate(rows, field, factor) {
+    const map = new Map();
+    rows.forEach(r => {
+      const year = getYear(r.Perioden);
+      if (!year) return;
+  
+      const raw = Number(r[field]) || 0;
+      const val = raw / factor;
+  
+      map.set(year, (map.get(year) || 0) + val);
+    });
+    return map;
+  }
+
+  function selectYears(allYears) {
+    if (!allYears.length) return [];
+    const sorted = [...allYears].sort((a, b) => a - b);
+    const minY = sorted[0];
+    const maxY = sorted[sorted.length - 1];
+    const cutoff = maxY - 1;
+
+    const fiveSteps = [];
+    for (let y = minY; y <= cutoff; y++) {
+      if (y % 1 === 0) fiveSteps.push(y);
+    }
+
+    const lastYears = [maxY];
+
+    return [...new Set([...fiveSteps, ...lastYears])].sort((a, b) => a - b);
+  }
+
+  function buildDataset(label, map, selectedYears, color) {
+    return {
+      label,
+      data: selectedYears.map(y => map.get(y) || 0),
+      backgroundColor: color,
+      borderColor: color.replace("0.6", "1"),
+      borderWidth: 1
+    };
+  }
+
+  // ========================
+  // MAIN
+  // ========================
+
+  try {
+    const rows = await fetchCbsData();
+
+    // Verzamel alle jaren
+    const allYearsSet = new Set();
+    rows.forEach(r => {
+      const y = getYear(r.Perioden);
+      if (y) allYearsSet.add(y);
+    });
+
+    const allYears = [...allYearsSet].sort((a, b) => a - b);
+    const selectedYears = selectYears(allYears);
+
+    // Kleuren
+    const COLORS = [
+      "rgba(54, 162, 235, 0.6)",
+      "rgba(75, 192, 192, 0.6)",
+      "rgba(255, 99, 132, 0.6)",
+      "rgba(153, 102, 255, 0.6)"
+    ];
+
+    // Bouw datasets
+    const datasets = FIELDS.map((f, i) => {
+    const map = aggregate(rows, f.key, f.factor);
+    return {
+        label: `${f.label}`,
+        data: selectedYears.map(y => map.get(y) || 0),
+        backgroundColor: COLORS[i],
+        borderColor: COLORS[i].replace("0.6", "1"),
+        borderWidth: 1
+      };
+    });
+
+    // Render chart
+    const ctx = document.getElementById(CHART_CANVAS_ID).getContext("2d");
+
+    if (window.__cbsChartInstance) window.__cbsChartInstance.destroy();
+
+    window.__cbsChartInstance = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: selectedYears.map(String),
+        datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { title: { display: true, text: "Jaar" } },
+          y: { beginAtZero: true, title: { display: true, text: "Waarde" } }
+        }
+      }
+    });
+
+  } catch (err) {
+    console.error("Fout in CBS-visualisatie:", err);
+    document.getElementById("chartWrapper").innerHTML =
+      "<p style='font-size:12px;color:#b00;text-align:center;'>Fout bij laden CBS-data.</p>";
+  }
+
+})();
+</script>
+
+</body>
+</html>
